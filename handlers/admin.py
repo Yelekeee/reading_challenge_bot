@@ -59,8 +59,8 @@ async def cmd_challenge_start(
 
     await msg.reply(
         f"✅ Daily reading challenge started!\n"
-        f"📅 Poll at <b>{settings['poll_time']}</b> (Asia/Almaty) every day.\n"
-        f"Use /challenge_stop to pause or /set_time HH:MM to change the time.",
+        f"📅 Poll at <b>{settings['poll_time']}</b> (Asia/Almaty) every day.\n\n"
+        f"Use /join to attend the poll and become a participant of this challenge.",
         parse_mode="HTML",
     )
 
