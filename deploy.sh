@@ -8,8 +8,7 @@ echo "==> Installing system dependencies..."
 sudo apt update && sudo apt install -y python3 python3-pip python3-venv git
 
 echo "==> Cloning repository..."
-# Replace the URL below with your actual GitHub repo URL
-git clone https://github.com/YOUR_USERNAME/reading_challenge_bot.git
+git clone https://github.com/Yelekeee/reading_challenge_bot.git
 cd reading_challenge_bot
 
 echo "==> Creating .env file..."
