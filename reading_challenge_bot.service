@@ -1,0 +1,18 @@
+[Unit]
+Description=Daily Reading Challenge Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/reading_challenge_bot
+EnvironmentFile=/home/ubuntu/reading_challenge_bot/.env
+ExecStart=/home/ubuntu/reading_challenge_bot/.venv/bin/python main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
