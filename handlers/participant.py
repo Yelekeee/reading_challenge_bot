@@ -20,9 +20,12 @@ from middleware import IsGroup
 from utils import (
     format_mention,
     get_almaty_today,
+    get_current_month_bounds,
     get_current_week_bounds,
     make_poll_link,
 )
+
+from config import DEFAULT_POLL_TIME
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -209,5 +212,82 @@ async def cmd_leaderboard(msg: Message, db: Database) -> None:
         rate = f"{yes / days_so_far * 100:.0f}%" if days_so_far > 0 else "0%"
         fire = " 🔥" if yes == days_so_far else ""
         lines.append(f"{medal} {mention} — {yes}/{days_so_far} ({rate}){fire}")
+
+    await msg.reply("\n".join(lines), parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
+# /help
+# ---------------------------------------------------------------------------
+
+@router.message(Command("help"), IsGroup())
+async def cmd_help(msg: Message, db: Database) -> None:
+    settings = await db.get_settings(msg.chat.id)
+    poll_time = settings["poll_time"] if settings else DEFAULT_POLL_TIME
+    reminder_time = settings["reminder_time"] if settings else "22:00"
+    status = "✅ Белсенді" if settings and settings["challenge_active"] else "⏸ Тоқтатылған"
+
+    await msg.reply(
+        f"📚 <b>Күнделікті оқу челленджі</b>\n\n"
+        f"Күн сайын 30 минут оқып, дағдыны қалыптастырыңыз!\n\n"
+        f"📊 Статус: {status}\n"
+        f"⏰ Сауалнама: <b>{poll_time}</b>\n"
+        f"⚠️ Еске салу: <b>{reminder_time}</b>\n\n"
+        f"<b>Командалар:</b>\n"
+        f"/join — челленджге қосылу\n"
+        f"/leave — челленджден шығу\n"
+        f"/today — бүгінгі дауыс беру статусы\n"
+        f"/stats — апталық және жалпы статистика\n"
+        f"/leaderboard — ағымдағы апта кестесі\n"
+        f"/monthly — айлық кесте\n"
+        f"/help — осы мәзір\n\n"
+        f"<b>Админ командалары:</b>\n"
+        f"/challenge_start — челленджді бастау\n"
+        f"/challenge_stop — челленджді тоқтату\n"
+        f"/set_time HH:MM — сауалнама уақытын өзгерту\n"
+        f"/set_reminder_time HH:MM — еске салу уақытын өзгерту\n"
+        f"/add — мүше қосу (жауап немесе @username)\n"
+        f"/addall @n1 @n2 ... — бірнеше мүшені бірден қосу\n"
+        f"/remove — мүшені жою\n"
+        f"/participants — мүшелер тізімі\n"
+        f"/weekly_summary_now — апталық қорытынды",
+        parse_mode="HTML",
+    )
+
+
+# ---------------------------------------------------------------------------
+# /monthly
+# ---------------------------------------------------------------------------
+
+@router.message(Command("monthly"), IsGroup())
+async def cmd_monthly(msg: Message, db: Database) -> None:
+    group_id = msg.chat.id
+    month_start, month_end = get_current_month_bounds()
+    today = get_almaty_today()
+    days_so_far = (today - month_start).days + 1
+
+    rows = await db.get_monthly_leaderboard(
+        group_id, month_start.isoformat(), month_end.isoformat()
+    )
+    if not rows:
+        await msg.reply(
+            "No participants yet.\n"
+            "Add participants with /add or use /join to self-enroll."
+        )
+        return
+
+    medals = ["🥇", "🥈", "🥉"]
+    lines = [
+        f"📅 <b>{month_start.strftime('%B %Y')}</b> — Reading Challenge\n"
+        f"Day {days_so_far} of {(month_end - month_start).days + 1}\n"
+    ]
+    for i, p in enumerate(rows):
+        medal = medals[i] if i < 3 else f"{i + 1}."
+        mention = format_mention(p["user_id"], p["username"], p["display_name"])
+        yes = p["yes_count"]
+        rate = f"{yes / days_so_far * 100:.0f}%" if days_so_far > 0 else "0%"
+        fire = " 🔥" if yes == days_so_far else ""
+        warn = " ⚠️" if p["missed_count"] >= 4 else ""
+        lines.append(f"{medal} {mention} — {yes}/{days_so_far} ({rate}){fire}{warn}")
 
     await msg.reply("\n".join(lines), parse_mode="HTML")

@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS settings (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     group_id         INTEGER UNIQUE NOT NULL REFERENCES groups(group_id),
     poll_time        TEXT    DEFAULT '20:00',
+    reminder_time    TEXT    DEFAULT '22:00',
     timezone         TEXT    DEFAULT 'Asia/Almaty',
     challenge_active INTEGER DEFAULT 0
 );
@@ -110,7 +111,18 @@ class Database:
         self._conn.row_factory = aiosqlite.Row
         await self._conn.executescript(SCHEMA)
         await self._conn.commit()
+        await self._migrate()
         logger.info("Database connected: %s", self.path)
+
+    async def _migrate(self) -> None:
+        """Apply schema migrations for existing databases."""
+        try:
+            await self.execute(
+                "ALTER TABLE settings ADD COLUMN reminder_time TEXT DEFAULT '22:00'"
+            )
+            logger.info("Migration: added reminder_time column to settings")
+        except Exception:
+            pass  # Column already exists
 
     async def close(self) -> None:
         if self._conn:
@@ -175,9 +187,15 @@ class Database:
 
     async def get_all_active_challenges(self) -> List[aiosqlite.Row]:
         return await self.fetchall(
-            "SELECT g.group_id, s.poll_time "
+            "SELECT g.group_id, s.poll_time, s.reminder_time "
             "FROM groups g JOIN settings s ON s.group_id = g.group_id "
             "WHERE s.challenge_active = 1 AND g.active = 1"
+        )
+
+    async def set_reminder_time(self, group_id: int, reminder_time: str) -> None:
+        await self.execute(
+            "UPDATE settings SET reminder_time = ? WHERE group_id = ?",
+            reminder_time, group_id,
         )
 
     # -----------------------------------------------------------------------
@@ -371,6 +389,19 @@ class Database:
             poll_id, user_id,
         )
 
+    async def get_unvoted_participants(
+        self, group_id: int, poll_date: str
+    ) -> List[aiosqlite.Row]:
+        """Active participants who haven't cast a valid vote in today's poll."""
+        return await self.fetchall(
+            "SELECT p.* FROM participants p "
+            "JOIN polls po ON po.group_id = p.group_id AND po.poll_date = ? "
+            "LEFT JOIN votes v ON v.poll_id = po.id AND v.user_id = p.user_id "
+            "WHERE p.group_id = ? AND p.active = 1 AND p.user_id IS NOT NULL "
+            "AND (v.id IS NULL OR v.option_idx IS NULL)",
+            poll_date, group_id,
+        )
+
     # -----------------------------------------------------------------------
     # Daily Results
     # -----------------------------------------------------------------------
@@ -447,6 +478,24 @@ class Database:
             "GROUP BY p.id "
             "ORDER BY yes_count DESC, p.display_name COLLATE NOCASE ASC",
             week_start, week_end, group_id,
+        )
+
+    async def get_monthly_leaderboard(
+        self, group_id: int, month_start: str, month_end: str
+    ) -> List[aiosqlite.Row]:
+        return await self.fetchall(
+            "SELECT p.id, p.display_name, p.user_id, p.username, "
+            "  COALESCE(SUM(CASE WHEN dr.status='yes'    THEN 1 ELSE 0 END), 0) AS yes_count, "
+            "  COALESCE(SUM(CASE WHEN dr.status='no'     THEN 1 ELSE 0 END), 0) AS no_count, "
+            "  COALESCE(SUM(CASE WHEN dr.status='missed' THEN 1 ELSE 0 END), 0) AS missed_count "
+            "FROM participants p "
+            "LEFT JOIN daily_results dr "
+            "  ON dr.participant_id = p.id "
+            "  AND dr.result_date BETWEEN ? AND ? "
+            "WHERE p.group_id=? AND p.active=1 "
+            "GROUP BY p.id "
+            "ORDER BY yes_count DESC, p.display_name COLLATE NOCASE ASC",
+            month_start, month_end, group_id,
         )
 
     # -----------------------------------------------------------------------

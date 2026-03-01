@@ -37,6 +37,17 @@ def get_current_week_bounds() -> tuple[date, date]:
     return week_start, week_end
 
 
+def get_current_month_bounds() -> tuple[date, date]:
+    """Return (first day, last day) of the current month in Almaty time."""
+    today = get_almaty_today()
+    month_start = today.replace(day=1)
+    if today.month == 12:
+        month_end = date(today.year + 1, 1, 1) - timedelta(days=1)
+    else:
+        month_end = date(today.year, today.month + 1, 1) - timedelta(days=1)
+    return month_start, month_end
+
+
 def get_prev_week_bounds() -> tuple[date, date]:
     """Return (Monday, Sunday) of the previous week in Almaty time."""
     today = get_almaty_today()

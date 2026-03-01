@@ -53,21 +53,27 @@ TZ = pytz.timezone(TIMEZONE)
 # ---------------------------------------------------------------------------
 
 ADMIN_COMMANDS = [
-    BotCommand(command="challenge_start",    description="Start the daily poll schedule"),
-    BotCommand(command="challenge_stop",     description="Pause the daily poll schedule"),
-    BotCommand(command="set_time",           description="Change poll time: /set_time HH:MM"),
-    BotCommand(command="add",                description="Add participant (reply or @username)"),
-    BotCommand(command="remove",             description="Remove participant (reply or @username)"),
-    BotCommand(command="participants",       description="List active participants"),
-    BotCommand(command="weekly_summary_now", description="Post current-week preview now"),
+    BotCommand(command="challenge_start",     description="Челленджді бастау"),
+    BotCommand(command="challenge_stop",      description="Челленджді тоқтату"),
+    BotCommand(command="set_time",            description="Сауалнама уақыты: /set_time HH:MM"),
+    BotCommand(command="set_reminder_time",   description="Еске салу уақыты: /set_reminder_time HH:MM"),
+    BotCommand(command="reminder_now",        description="Дауыс бермегендерге қазір еске салу"),
+    BotCommand(command="add",                 description="Мүше қосу (жауап немесе @username)"),
+    BotCommand(command="addall",              description="Бірнеше мүшені қосу: /addall @n1 @n2 ..."),
+    BotCommand(command="remove",              description="Мүшені жою (жауап немесе @username)"),
+    BotCommand(command="participants",        description="Мүшелер тізімі"),
+    BotCommand(command="weekly_summary_now",  description="Апталық қорытындыны қазір жіберу"),
+    BotCommand(command="monthly_summary_now", description="Айлық қорытындыны қазір жіберу"),
 ]
 
 PARTICIPANT_COMMANDS = [
-    BotCommand(command="join",        description="Join the reading challenge"),
-    BotCommand(command="leave",       description="Leave the challenge"),
-    BotCommand(command="today",       description="Today's vote status"),
-    BotCommand(command="stats",       description="Your weekly + all-time stats"),
-    BotCommand(command="leaderboard", description="Current-week leaderboard"),
+    BotCommand(command="join",        description="Челленджге қосылу"),
+    BotCommand(command="leave",       description="Челленджден шығу"),
+    BotCommand(command="today",       description="Бүгінгі дауыс беру статусы"),
+    BotCommand(command="stats",       description="Апталық және жалпы статистика"),
+    BotCommand(command="leaderboard", description="Ағымдағы апта кестесі"),
+    BotCommand(command="monthly",     description="Айлық кесте"),
+    BotCommand(command="help",        description="Көмек және командалар тізімі"),
 ]
 
 
@@ -90,15 +96,16 @@ async def set_commands(bot: Bot) -> None:
 
 async def on_private_start(message: Message) -> None:
     await message.answer(
-        "👋 Hi! I'm the <b>Daily Reading Challenge</b> bot.\n\n"
-        "I'm designed for groups. Add me to your reading group and an admin "
-        "can run /challenge_start to kick things off.\n\n"
-        "<b>How it works:</b>\n"
-        "• Every day at 20:00 (Asia/Almaty) I post a poll: \u201cDid you read 30 min?\u201d\n"
-        "• I track each participant's ✅/❌ votes.\n"
-        "• Every Monday I post a weekly leaderboard.\n\n"
-        "<b>⚠️ Important:</b> Make sure my privacy mode is <b>disabled</b> in "
-        "@BotFather so I can see all group messages.",
+        "📚 <b>Күнделікті оқу челленджі боты</b>\n\n"
+        "Күн сайын 30 минут оқи отырып, дағдыны қалыптастырыңыз!\n\n"
+        "Бот топтар үшін жасалған. Мені оқу тобыңызға қосыңыз, "
+        "содан кейін админ /challenge_start командасын іске қосады.\n\n"
+        "<b>Қалай жұмыс істейді:</b>\n"
+        "• Күн сайын 20:00-де (Алматы) сауалнама жіберіледі\n"
+        "• Әр қатысушының ✅/❌ дауыстары жазылады\n"
+        "• Әр дүйсенбі сайын апталық кесте жарияланады\n\n"
+        "<b>⚠️ Маңызды:</b> @BotFather-де privacy mode <b>өшірулі</b> болуы керек, "
+        "әйтпесе бот топтағы хабарларды көре алмайды.",
         parse_mode="HTML",
     )
 
@@ -156,7 +163,10 @@ async def main() -> None:
     # --- Restore scheduler jobs for active challenges ---
     active = await db.get_all_active_challenges()
     for row in active:
-        schedule_group_jobs(scheduler, row["group_id"], row["poll_time"], bot, db)
+        schedule_group_jobs(
+            scheduler, row["group_id"], row["poll_time"], bot, db,
+            reminder_time=row["reminder_time"],
+        )
     logger.info("Restored %d active challenge(s) from database.", len(active))
 
     scheduler.start()

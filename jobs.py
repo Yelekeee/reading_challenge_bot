@@ -11,6 +11,7 @@ schedule_group_jobs / remove_group_jobs manage APScheduler entries per group.
 import asyncio
 import logging
 from datetime import date
+from typing import Optional
 
 import pytz
 from aiogram import Bot
@@ -27,6 +28,7 @@ from utils import (
     get_prev_week_bounds,
     make_poll_link,
 )
+
 
 logger = logging.getLogger(__name__)
 TZ = pytz.timezone(TIMEZONE)
@@ -134,6 +136,54 @@ async def snapshot_daily_results(group_id: int, bot: Bot, db: Database) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Job: poll reminder
+# ---------------------------------------------------------------------------
+
+async def send_poll_reminder(group_id: int, bot: Bot, db: Database) -> None:
+    """Tag participants who haven't voted in today's poll yet."""
+    today = get_almaty_today().isoformat()
+    poll = await db.get_poll_by_date(group_id, today)
+    if not poll or not poll["tg_poll_id"]:
+        logger.info("No poll for group=%s date=%s — skipping reminder", group_id, today)
+        return
+
+    unvoted = await db.get_unvoted_participants(group_id, today)
+    if not unvoted:
+        logger.info("All voted for group=%s — no reminder needed", group_id)
+        return
+
+    mention_parts = [
+        format_mention(p["user_id"], p["username"], p["display_name"])
+        for p in unvoted
+    ]
+    mentions_line = " ".join(mention_parts)
+
+    link_line = ""
+    if poll["message_id"]:
+        link = make_poll_link(group_id, poll["message_id"])
+        if link:
+            link_line = f'\n🔗 <a href="{link}">Go to today\'s poll</a>'
+
+    try:
+        await bot.send_message(
+            chat_id=group_id,
+            text=(
+                f"⏰ <b>Reminder!</b>\n\n"
+                f"{mentions_line}\n\n"
+                f"You haven't voted in today's reading poll yet! 📚{link_line}"
+            ),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        logger.info(
+            "Poll reminder sent for group=%s date=%s (%d unvoted)",
+            group_id, today, len(unvoted),
+        )
+    except TelegramAPIError as exc:
+        logger.error("Failed to send reminder for group=%s: %s", group_id, exc)
+
+
+# ---------------------------------------------------------------------------
 # Job: weekly summary (Monday 09:00)
 # ---------------------------------------------------------------------------
 
@@ -229,8 +279,9 @@ def schedule_group_jobs(
     poll_time: str,
     bot: Bot,
     db: Database,
+    reminder_time: Optional[str] = None,
 ) -> None:
-    """Add (or replace) the three cron jobs for a group."""
+    """Add (or replace) the cron jobs for a group."""
     hour, minute = map(int, poll_time.split(":"))
 
     scheduler.add_job(
@@ -257,14 +308,35 @@ def schedule_group_jobs(
         replace_existing=True,
         misfire_grace_time=300,
     )
-    logger.info(
-        "Scheduled jobs for group=%s at %s Asia/Almaty", group_id, poll_time
-    )
+
+    # Remove stale reminder job before (re)adding
+    if scheduler.get_job(f"reminder_{group_id}"):
+        scheduler.remove_job(f"reminder_{group_id}")
+
+    if reminder_time:
+        r_hour, r_minute = map(int, reminder_time.split(":"))
+        scheduler.add_job(
+            send_poll_reminder,
+            CronTrigger(hour=r_hour, minute=r_minute, timezone=TZ),
+            id=f"reminder_{group_id}",
+            args=[group_id, bot, db],
+            replace_existing=True,
+            misfire_grace_time=120,
+        )
+        logger.info(
+            "Scheduled jobs for group=%s poll=%s reminder=%s Asia/Almaty",
+            group_id, poll_time, reminder_time,
+        )
+    else:
+        logger.info(
+            "Scheduled jobs for group=%s poll=%s (no reminder) Asia/Almaty",
+            group_id, poll_time,
+        )
 
 
 def remove_group_jobs(scheduler: AsyncIOScheduler, group_id: int) -> None:
     """Remove all scheduler jobs for a group (on /challenge_stop)."""
-    for prefix in ("poll", "snapshot", "weekly"):
+    for prefix in ("poll", "snapshot", "weekly", "reminder"):
         job_id = f"{prefix}_{group_id}"
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)

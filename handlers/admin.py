@@ -20,9 +20,9 @@ from aiogram.types import Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from db import Database
-from jobs import post_weekly_summary, remove_group_jobs, schedule_group_jobs
+from jobs import post_weekly_summary, remove_group_jobs, schedule_group_jobs, send_poll_reminder
 from middleware import IsAdmin, IsGroup
-from utils import format_mention
+from utils import format_mention, get_almaty_today, get_current_month_bounds
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -55,11 +55,18 @@ async def cmd_challenge_start(
         return
 
     await db.set_challenge_active(group_id, True)
-    schedule_group_jobs(scheduler, group_id, settings["poll_time"], bot, db)
+    schedule_group_jobs(
+        scheduler, group_id, settings["poll_time"], bot, db,
+        reminder_time=settings["reminder_time"],
+    )
 
+    reminder_line = (
+        f"\n⏰ Reminder at <b>{settings['reminder_time']}</b> for unvoted participants."
+        if settings["reminder_time"] else ""
+    )
     await msg.reply(
         f"✅ Daily reading challenge started!\n"
-        f"📅 Poll at <b>{settings['poll_time']}</b> (Asia/Almaty) every day.\n\n"
+        f"📅 Poll at <b>{settings['poll_time']}</b> (Asia/Almaty) every day.{reminder_line}\n\n"
         f"Use /join to attend the poll and become a participant of this challenge.",
         parse_mode="HTML",
     )
@@ -111,7 +118,10 @@ async def cmd_set_time(
     await db.set_poll_time(group_id, poll_time)
 
     if settings and settings["challenge_active"]:
-        schedule_group_jobs(scheduler, group_id, poll_time, bot, db)
+        schedule_group_jobs(
+            scheduler, group_id, poll_time, bot, db,
+            reminder_time=settings["reminder_time"],
+        )
         await msg.reply(
             f"✅ Poll time updated to <b>{poll_time}</b> (Asia/Almaty). Jobs rescheduled.",
             parse_mode="HTML",
@@ -122,6 +132,60 @@ async def cmd_set_time(
             f"Start the challenge with /challenge_start.",
             parse_mode="HTML",
         )
+
+
+# ---------------------------------------------------------------------------
+# /set_reminder_time HH:MM
+# ---------------------------------------------------------------------------
+
+@router.message(Command("set_reminder_time"), IsGroup(), IsAdmin())
+async def cmd_set_reminder_time(
+    msg: Message,
+    db: Database,
+    scheduler: AsyncIOScheduler,
+    bot: Bot,
+    command: CommandObject,
+) -> None:
+    group_id = msg.chat.id
+    raw = (command.args or "").strip()
+
+    if not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", raw):
+        await msg.reply(
+            "❌ Invalid format. Example: <code>/set_reminder_time 22:00</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    reminder_time = raw
+    settings = await db.get_settings(group_id)
+    await db.set_reminder_time(group_id, reminder_time)
+
+    if settings and settings["challenge_active"]:
+        schedule_group_jobs(
+            scheduler, group_id, settings["poll_time"], bot, db,
+            reminder_time=reminder_time,
+        )
+        await msg.reply(
+            f"✅ Reminder time set to <b>{reminder_time}</b> (Asia/Almaty).\n"
+            f"Participants who haven't voted by this time will be tagged.",
+            parse_mode="HTML",
+        )
+    else:
+        await msg.reply(
+            f"✅ Reminder time set to <b>{reminder_time}</b> (Asia/Almaty). "
+            f"Start the challenge with /challenge_start.",
+            parse_mode="HTML",
+        )
+
+
+# ---------------------------------------------------------------------------
+# /reminder_now  (manual trigger for testing)
+# ---------------------------------------------------------------------------
+
+@router.message(Command("reminder_now"), IsGroup(), IsAdmin())
+async def cmd_reminder_now(msg: Message, db: Database, bot: Bot) -> None:
+    await msg.reply("⏰ Sending reminder to unvoted participants…")
+    await send_poll_reminder(msg.chat.id, bot, db)
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +318,59 @@ async def cmd_participants(msg: Message, db: Database) -> None:
 
 
 # ---------------------------------------------------------------------------
+# /addall  (@username1 @username2 ...)
+# ---------------------------------------------------------------------------
+
+@router.message(Command("addall"), IsGroup(), IsAdmin())
+async def cmd_addall(
+    msg: Message,
+    db: Database,
+    command: CommandObject,
+) -> None:
+    group_id = msg.chat.id
+    raw = (command.args or "").strip()
+
+    if not raw:
+        await msg.reply(
+            "Қолданылуы: <code>/addall @username1 @username2 ...</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    usernames = [u.lstrip("@") for u in raw.split() if u.strip()]
+    if not usernames:
+        await msg.reply("❌ Username табылмады.")
+        return
+
+    added_lines = []
+    pending_lines = []
+
+    for username in usernames:
+        existing = await db.get_participant_by_username(group_id, username)
+        if existing and existing["user_id"]:
+            await db.upsert_participant(
+                group_id, existing["user_id"], username, existing["display_name"]
+            )
+            added_lines.append(f"✅ @{username}")
+        else:
+            await db.add_pending_participant(group_id, username)
+            pending_lines.append(f"⏳ @{username}")
+
+    lines = [f"👥 <b>{len(usernames)} мүше өңделді:</b>\n"]
+    if added_lines:
+        lines.append("Қосылды: " + ", ".join(added_lines))
+    if pending_lines:
+        lines.append("Күтілуде: " + ", ".join(pending_lines))
+    if pending_lines:
+        lines.append(
+            "\n<i>⏳ — user_id әлі белгісіз. "
+            "Топта хабар жіберсе немесе /join пайдаланса тіркеледі.</i>"
+        )
+
+    await msg.reply("\n".join(lines), parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
 # /weekly_summary_now
 # ---------------------------------------------------------------------------
 
@@ -261,3 +378,38 @@ async def cmd_participants(msg: Message, db: Database) -> None:
 async def cmd_weekly_summary_now(msg: Message, db: Database, bot: Bot) -> None:
     await msg.reply("📊 Generating current-week preview…")
     await post_weekly_summary(msg.chat.id, bot, db, preview=True)
+
+
+# ---------------------------------------------------------------------------
+# /monthly_summary_now
+# ---------------------------------------------------------------------------
+
+@router.message(Command("monthly_summary_now"), IsGroup(), IsAdmin())
+async def cmd_monthly_summary_now(msg: Message, db: Database, bot: Bot) -> None:
+    group_id = msg.chat.id
+    month_start, month_end = get_current_month_bounds()
+    today = get_almaty_today()
+    days_so_far = (today - month_start).days + 1
+
+    rows = await db.get_monthly_leaderboard(
+        group_id, month_start.isoformat(), month_end.isoformat()
+    )
+    if not rows:
+        await msg.reply("No participants yet.")
+        return
+
+    medals = ["🥇", "🥈", "🥉"]
+    lines = [
+        f"📅 <b>{month_start.strftime('%B %Y')} — Reading Challenge</b>\n"
+        f"Day {days_so_far} of {(month_end - month_start).days + 1}\n"
+    ]
+    for i, p in enumerate(rows):
+        medal = medals[i] if i < 3 else f"{i + 1}."
+        mention = format_mention(p["user_id"], p["username"], p["display_name"])
+        yes = p["yes_count"]
+        rate = f"{yes / days_so_far * 100:.0f}%" if days_so_far > 0 else "0%"
+        fire = " 🔥" if yes == days_so_far else ""
+        warn = " ⚠️" if p["missed_count"] >= 4 else ""
+        lines.append(f"{medal} {mention} — {yes}/{days_so_far} ({rate}){fire}{warn}")
+
+    await bot.send_message(group_id, "\n".join(lines), parse_mode="HTML")
